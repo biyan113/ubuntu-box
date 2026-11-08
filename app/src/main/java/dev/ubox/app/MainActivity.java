@@ -261,8 +261,12 @@ public class MainActivity extends Activity {
   }
 
   private void requestStorage() {
-    if (Environment.isExternalStorageManager()) {
+    if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) {
       Toast.makeText(this, "已授权，新会话中可访问 /sdcard", Toast.LENGTH_SHORT).show();
+      return;
+    }
+    if (Build.VERSION.SDK_INT < 30) {
+      Toast.makeText(this, "Android 10 及以下不需要该权限", Toast.LENGTH_SHORT).show();
       return;
     }
     startActivity(

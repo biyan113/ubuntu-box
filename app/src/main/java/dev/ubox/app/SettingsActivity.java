@@ -95,7 +95,9 @@ public class SettingsActivity extends Activity {
         npm("codex", "Codex CLI", "OpenAI · npm @openai/codex", "codex", "@openai/codex"),
         npm("gemini", "Gemini CLI", "Google · npm @google/gemini-cli", "gemini",
             "@google/gemini-cli"),
-        npm("opencode", "OpenCode", "npm opencode-ai", "opencode", "opencode-ai")),
+        npm("opencode", "OpenCode", "npm opencode-ai", "opencode", "opencode-ai"),
+        npm("ccconnect", "CC-Connect", "把 Claude Code 接入飞书/Telegram/微信等 · npm cc-connect",
+            "cc-connect", "cc-connect")),
   };
 
   /** 「一键安装推荐」包含的条目。 */
@@ -116,6 +118,9 @@ public class SettingsActivity extends Activity {
   private boolean sshInstalled;
   private int sshKeyCount;
   private boolean sshHasPassword;
+  private TextView ccState;
+  private Button ccButton;
+  private boolean ccConfigured, ccRunning;
   private TerminalService service;
   private final android.content.ServiceConnection connection =
       new android.content.ServiceConnection() {
@@ -178,6 +183,8 @@ public class SettingsActivity extends Activity {
       }
     }
 
+    buildCcSection(list);
+
     Toolbar toolbar = new Toolbar(this);
     toolbar.setBackgroundColor(0xFF1E1E1E);
     toolbar.setTitleTextColor(Color.WHITE);
@@ -227,9 +234,10 @@ public class SettingsActivity extends Activity {
         + " | sed 's/^URIs: */mirror=/'\n");
     for (Section section : SECTIONS)
       for (Tool tool : section.tools()) script.append(tool.statusCheck()).append('\n');
-    script.append("[ -x /usr/sbin/sshd ] && echo sshd=1 || echo sshd=0\n");
-    script.append("echo sshkeys=$(grep -cE '^(ssh-|ecdsa-|sk-)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)\n");
+    script.append("[ -x /usr/sbin/sshd ] && echo sshd=1 || echo sshd=0\n");    script.append("echo sshkeys=$(grep -cE '^(ssh-|ecdsa-|sk-)' /root/.ssh/authorized_keys 2>/dev/null || echo 0)\n");
     script.append("awk -F: '$1==\"root\"{print \"sshpw=\" (($2 ~ /^[!*]/ || $2 == \"\") ? 0 : 1)}' /etc/shadow\n");
+    script.append("[ -f /root/.cc-connect/config.toml ] && echo ccconf=1 || echo ccconf=0\n");
+    script.append("pgrep -f 'cc-connect --config' >/dev/null 2>&1 && echo ccrun=1 || echo ccrun=0\n");
     new Thread(
             () -> {
               String output;
@@ -261,7 +269,10 @@ public class SettingsActivity extends Activity {
                     sshInstalled = Boolean.TRUE.equals(result.get("sshd"));
                     sshHasPassword = Boolean.TRUE.equals(result.get("sshpw"));
                     sshKeyCount = keyCount;
+                    ccConfigured = Boolean.TRUE.equals(result.get("ccconf"));
+                    ccRunning = Boolean.TRUE.equals(result.get("ccrun"));
                     updateSshUi();
+                    updateCcUi();
                     for (Map.Entry<String, Button> entry : buttons.entrySet())
                       styleButton(entry.getValue(), Boolean.TRUE.equals(installed.get(entry.getKey())));
                     statusLine.setText("安装会在新的终端会话中进行，完成后返回这里即可看到状态");
@@ -357,6 +368,106 @@ public class SettingsActivity extends Activity {
   private void runInTerminal(String name, String command) {
     setResult(RESULT_OK, new Intent().putExtra(EXTRA_NAME, name).putExtra(EXTRA_COMMAND, command));
     finish();
+  }
+
+  // ---------------------------------------------------------------- CC-Connect
+
+  private void buildCcSection(LinearLayout list) {
+    list.addView(header("CC-Connect 后台服务"));
+
+    ccButton = actionButton();
+    ccButton.setOnClickListener(v -> toggleCc());
+    LinearLayout stateRow = row("允许后台执行（崩溃自动重启）", ccButton);
+    ccState = subtitle(stateRow);
+    stateRow.setOnClickListener(v -> toggleCc());
+    list.addView(stateRow);
+
+    LinearLayout logRow = row("查看运行日志", null);
+    subtitle(logRow).setText("cc-connect 的启动与连接记录");
+    logRow.setOnClickListener(v -> showCcLog());
+    list.addView(logRow);
+
+    TextView note = text(
+        "先在上方「AI Agent」里安装 CC-Connect，并在终端运行一次 cc-connect 完成配置"
+            + "（/root/.cc-connect/config.toml）。开启后台执行后，App 启动时会自动拉起，"
+            + "进程退出 10 秒内自动重启；锁屏/重启后打开一次 App 即可恢复。",
+        12, 0xFF9E9E9E);
+    note.setPadding(0, dp(4), 0, 0);
+    list.addView(note);
+    updateCcUi();
+  }
+
+  private void updateCcUi() {
+    if (ccButton == null) return;
+    boolean installedTool = Boolean.TRUE.equals(installed.get("ccconnect"));
+    if (!installedTool) {
+      ccState.setText("未安装 CC-Connect");
+      ccButton.setText("安装");
+      ccButton.setTextColor(0xFFE95420);
+    } else if (!ccConfigured) {
+      ccState.setText("未配置（/root/.cc-connect/config.toml）");
+      ccButton.setText("去配置");
+      ccButton.setTextColor(0xFFE95420);
+    } else if (ccRunning) {
+      ccState.setText("运行中 · 后台执行已允许");
+      ccButton.setText("停止");
+      ccButton.setTextColor(0xFFE57373);
+    } else {
+      ccState.setText("已停止");
+      ccButton.setText("启动");
+      ccButton.setTextColor(0xFFE95420);
+    }
+  }
+
+  private void toggleCc() {
+    if (!Boolean.TRUE.equals(installed.get("ccconnect"))) {
+      runInTerminal("安装 CC-Connect", "ubox-install npm cc-connect");
+      return;
+    }
+    if (!ccConfigured) {
+      runInTerminal("配置 CC-Connect", "cc-connect");
+      return;
+    }
+    if (service == null) return;
+    if (ccRunning) {
+      service.stopCcConnect();
+      ccRunning = false;
+      updateCcUi();
+      ccState.postDelayed(() -> refreshStatus(), 1500);
+      return;
+    }
+    ccState.setText("启动中…");
+    service.startCcConnect();
+    ccState.postDelayed(() -> refreshStatus(), 3000);
+  }
+
+  private void showCcLog() {
+    new Thread(
+            () -> {
+              String log = "";
+              try {
+                log = proot.run("tail -n 80 /root/.cc-connect/cc-connect.log 2>/dev/null", 15_000);
+              } catch (Exception error) {
+                log = "读取失败：" + error.getMessage();
+              }
+              final String content = log;
+              runOnUiThread(
+                  () -> {
+                    TextView view = text(content.isEmpty() ? "（暂无日志）" : content, 11, Color.WHITE);
+                    view.setTypeface(Typeface.MONOSPACE);
+                    view.setTextIsSelectable(true);
+                    view.setPadding(dp(16), dp(8), dp(16), dp(8));
+                    ScrollView scroll = new ScrollView(this);
+                    scroll.addView(view);
+                    new AlertDialog.Builder(this)
+                        .setTitle("cc-connect 日志")
+                        .setView(scroll)
+                        .setPositiveButton("关闭", null)
+                        .show();
+                  });
+            },
+            "cc-log")
+        .start();
   }
 
   // ---------------------------------------------------------------- SSH

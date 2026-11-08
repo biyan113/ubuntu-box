@@ -134,7 +134,7 @@ final class Proot {
         new Thread(
             () -> {
               try (InputStream in = process.getInputStream()) {
-                in.transferTo(output);
+                Io.copy(in, output);
               } catch (IOException ignored) {
                 // 进程被结束时流会关闭
               }
@@ -146,7 +146,7 @@ final class Proot {
       throw new IOException("命令超时");
     }
     reader.join(2000);
-    return output.toString(java.nio.charset.StandardCharsets.UTF_8);
+    return new String(output.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
   }
 
   /** 实测当前存储能否创建硬链接；部分 Android 版本的 SELinux 策略会拒绝。 */
@@ -184,7 +184,7 @@ final class Proot {
     File partial = new File(target.getPath() + ".part");
     try (InputStream in = new FileInputStream(source);
         OutputStream out = new FileOutputStream(partial)) {
-      in.transferTo(out);
+      Io.copy(in, out);
     }
     if (!partial.renameTo(target)) throw new IOException("无法写入 " + target);
   }
